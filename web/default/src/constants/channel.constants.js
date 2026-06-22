@@ -7,6 +7,13 @@ export const CHANNEL_OPTIONS = [
     color: 'olive',
     description: 'OpenAI 兼容渠道，支持设置 Base URL',
   },
+  {
+    key: 52,
+    text: 'OpenAI OAuth (Codex)',
+    value: 52,
+    color: 'green',
+    description: '通过 ChatGPT/Codex 授权使用，无需 OpenAI API Key',
+  },
   {key: 14, text: 'Anthropic', value: 14, color: 'black'},
   { key: 33, text: 'AWS', value: 33, color: 'black' },
   {key: 3, text: 'Azure', value: 3, color: 'olive'},

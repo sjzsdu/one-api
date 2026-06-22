@@ -15,12 +15,14 @@ import {
   copy,
   showError,
   showInfo,
-  showNotice,
   showSuccess,
 } from '../helpers';
 import Turnstile from 'react-turnstile';
 import { UserContext } from '../context/User';
-import { onGitHubOAuthClicked, onLarkOAuthClicked } from './utils';
+import {
+  onGitHubOAuthClicked,
+  onLarkOAuthClicked,
+} from './utils';
 
 const PersonalSetting = () => {
   const { t } = useTranslation();

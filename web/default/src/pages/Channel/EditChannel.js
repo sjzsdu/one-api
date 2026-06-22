@@ -1,16 +1,65 @@
-import React, {useEffect, useState} from 'react';
-import {useTranslation} from 'react-i18next';
-import {Button, Card, Form, Input, Message} from 'semantic-ui-react';
-import {useNavigate, useParams} from 'react-router-dom';
-import {API, copy, getChannelModels, showError, showInfo, showSuccess, verifyJSON,} from '../../helpers';
-import {CHANNEL_OPTIONS} from '../../constants';
-import {renderChannelTip} from '../../helpers/render';
+import React, { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Button, Card, Form, Input, Message } from 'semantic-ui-react';
+import { useNavigate, useParams } from 'react-router-dom';
+import {
+  API,
+  copy,
+  getChannelModels,
+  showError,
+  showInfo,
+  showSuccess,
+  verifyJSON,
+} from '../../helpers';
+import { CHANNEL_OPTIONS } from '../../constants';
+import { renderChannelTip } from '../../helpers/render';
 
 const MODEL_MAPPING_EXAMPLE = {
   'gpt-3.5-turbo-0301': 'gpt-3.5-turbo',
   'gpt-4-0314': 'gpt-4',
   'gpt-4-32k-0314': 'gpt-4-32k',
 };
+
+const OPENAI_CODEX_OAUTH_CHANNEL_TYPE = 52;
+const OPENAI_CODEX_FALLBACK_MODELS = [
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+];
+
+function normalizeModelList(models = []) {
+  if (!Array.isArray(models)) return [];
+  const seen = new Set();
+  return models
+    .map((model) => String(model).trim())
+    .filter((model) => {
+      if (model === '' || seen.has(model)) {
+        return false;
+      }
+      seen.add(model);
+      return true;
+    });
+}
+
+function buildModelOptions(models = []) {
+  return normalizeModelList(models).map((model) => ({
+    key: model,
+    text: model,
+    value: model,
+  }));
+}
+
+function isOpenAICodexOAuthType(type) {
+  return Number(type) === OPENAI_CODEX_OAUTH_CHANNEL_TYPE;
+}
+
+function getInitialChannelModels(type) {
+  if (isOpenAICodexOAuthType(type)) {
+    return OPENAI_CODEX_FALLBACK_MODELS;
+  }
+  return normalizeModelList(getChannelModels(type));
+}
 
 function type2secretPrompt(type, t) {
   switch (type) {
@@ -57,6 +106,9 @@ const EditChannel = () => {
   const [basicModels, setBasicModels] = useState([]);
   const [fullModels, setFullModels] = useState([]);
   const [customModel, setCustomModel] = useState('');
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [openAIOAuthLoading, setOpenAIOAuthLoading] = useState('');
+  const [openAIOAuthNotice, setOpenAIOAuthNotice] = useState('');
   const [config, setConfig] = useState({
     region: '',
     sk: '',
@@ -66,14 +118,26 @@ const EditChannel = () => {
     vertex_ai_adc: '',
   });
   const handleInputChange = (e, { name, value }) => {
-    setInputs((inputs) => ({ ...inputs, [name]: value }));
     if (name === 'type') {
-      let localModels = getChannelModels(value);
-      if (inputs.models.length === 0) {
-        setInputs((inputs) => ({ ...inputs, models: localModels }));
+      const localModels = getInitialChannelModels(value);
+      if (isOpenAICodexOAuthType(value)) {
+        setFullModels([]);
       }
       setBasicModels(localModels);
+      setInputs((inputs) => ({
+        ...inputs,
+        type: value,
+        models:
+          isOpenAICodexOAuthType(value) || inputs.models.length === 0
+            ? localModels
+            : normalizeModelList(inputs.models),
+      }));
+      return;
     }
+    if (name === 'models') {
+      value = normalizeModelList(value);
+    }
+    setInputs((inputs) => ({ ...inputs, [name]: value }));
   };
 
   const handleConfigChange = (e, { name, value }) => {
@@ -87,7 +151,7 @@ const EditChannel = () => {
       if (data.models === '') {
         data.models = [];
       } else {
-        data.models = data.models.split(',');
+        data.models = normalizeModelList(data.models.split(','));
       }
       if (data.group === '') {
         data.groups = [];
@@ -105,7 +169,7 @@ const EditChannel = () => {
       if (data.config !== '') {
         setConfig(JSON.parse(data.config));
       }
-      setBasicModels(getChannelModels(data.type));
+      setBasicModels(getInitialChannelModels(data.type));
     } else {
       showError(message);
     }
@@ -115,13 +179,11 @@ const EditChannel = () => {
   const fetchModels = async () => {
     try {
       let res = await API.get(`/api/channel/models`);
-      let localModelOptions = res.data.data.map((model) => ({
-        key: model.id,
-        text: model.id,
-        value: model.id,
-      }));
-      setOriginModelOptions(localModelOptions);
-      setFullModels(res.data.data.map((model) => model.id));
+      const modelIds = normalizeModelList(
+        res.data.data.map((model) => model.id)
+      );
+      setOriginModelOptions(buildModelOptions(modelIds));
+      setFullModels(modelIds);
     } catch (error) {
       showError(error.message);
     }
@@ -143,24 +205,32 @@ const EditChannel = () => {
   };
 
   useEffect(() => {
-    let localModelOptions = [...originModelOptions];
-    inputs.models.forEach((model) => {
-      if (!localModelOptions.find((option) => option.key === model)) {
-        localModelOptions.push({
+    const optionMap = new Map();
+    const sourceOptions = isOpenAICodexOAuthType(inputs.type)
+      ? buildModelOptions(basicModels)
+      : originModelOptions;
+    sourceOptions.forEach((option) => {
+      if (option.value) {
+        optionMap.set(option.value, option);
+      }
+    });
+    normalizeModelList(inputs.models).forEach((model) => {
+      if (!optionMap.has(model)) {
+        optionMap.set(model, {
           key: model,
           text: model,
           value: model,
         });
       }
     });
-    setModelOptions(localModelOptions);
-  }, [originModelOptions, inputs.models]);
+    setModelOptions(Array.from(optionMap.values()));
+  }, [basicModels, originModelOptions, inputs.models, inputs.type]);
 
   useEffect(() => {
     if (isEdit) {
       loadChannel().then();
     } else {
-      let localModels = getChannelModels(inputs.type);
+      let localModels = getInitialChannelModels(inputs.type);
       setBasicModels(localModels);
     }
     fetchModels().then();
@@ -179,8 +249,16 @@ const EditChannel = () => {
         inputs.key = `${config.region}|${config.vertex_ai_project_id}|${config.vertex_ai_adc}`;
       }
     }
-    if (!isEdit && (inputs.name === '' || inputs.key === '')) {
+    if (!isEdit && inputs.name === '') {
       showInfo(t('channel.edit.messages.name_required'));
+      return;
+    }
+    if (!isEdit && inputs.key === '') {
+      showInfo(
+        inputs.type === OPENAI_CODEX_OAUTH_CHANNEL_TYPE
+          ? t('channel.edit.messages.openai_oauth_required')
+          : t('channel.edit.messages.key_required')
+      );
       return;
     }
     if (inputs.type !== 43 && inputs.models.length === 0) {
@@ -205,7 +283,7 @@ const EditChannel = () => {
       localInputs.other = '2024-03-01-preview';
     }
     let res;
-    localInputs.models = localInputs.models.join(',');
+    localInputs.models = normalizeModelList(localInputs.models).join(',');
     localInputs.group = localInputs.groups.join(',');
     localInputs.config = JSON.stringify(config);
     if (isEdit) {
@@ -230,21 +308,276 @@ const EditChannel = () => {
   };
 
   const addCustomModel = () => {
-    if (customModel.trim() === '') return;
-    if (inputs.models.includes(customModel)) return;
-    let localModels = [...inputs.models];
-    localModels.push(customModel);
-    let localModelOptions = [];
-    localModelOptions.push({
-      key: customModel,
-      text: customModel,
-      value: customModel,
-    });
-    setModelOptions((modelOptions) => {
-      return [...modelOptions, ...localModelOptions];
-    });
+    const model = customModel.trim();
+    if (model === '') return;
+    if (inputs.models.includes(model)) return;
+    const localModels = normalizeModelList([...inputs.models, model]);
     setCustomModel('');
     handleInputChange(null, { name: 'models', value: localModels });
+  };
+
+  const addModelOption = (model) => {
+    model = String(model || '').trim();
+    if (model === '') return;
+    setModelOptions((modelOptions) => {
+      if (modelOptions.some((option) => option.value === model)) {
+        return modelOptions;
+      }
+      return [
+        ...modelOptions,
+        {
+          key: model,
+          text: model,
+          value: model,
+        },
+      ];
+    });
+    handleInputChange(null, {
+      name: 'models',
+      value: normalizeModelList([...inputs.models, model]),
+    });
+  };
+
+  const requestChannelModels = async (key = inputs.key) => {
+    const res = await API.post('/api/channel/models/refresh', {
+      id: isEdit ? parseInt(channelId) : 0,
+      type: inputs.type,
+      key,
+      base_url: inputs.base_url,
+      other: inputs.other,
+      config: JSON.stringify(config),
+    });
+    if (!res || !res.data) {
+      throw new Error(t('channel.edit.messages.openai_oauth_request_failed'));
+    }
+    const { success, message, data } = res.data;
+    if (!success) {
+      throw new Error(
+        message || t('channel.edit.messages.openai_oauth_request_failed')
+      );
+    }
+    return normalizeModelList(data?.models);
+  };
+
+  const applyRefreshedModels = (refreshedModels) => {
+    setOriginModelOptions((originModelOptions) =>
+      buildModelOptions([
+        ...originModelOptions.map((option) => option.value),
+        ...refreshedModels,
+      ])
+    );
+    setBasicModels(refreshedModels);
+    setFullModels(refreshedModels);
+    handleInputChange(null, { name: 'models', value: refreshedModels });
+  };
+
+  const applyCodexFallbackModels = () => {
+    const fallbackModels = normalizeModelList(OPENAI_CODEX_FALLBACK_MODELS);
+    setOriginModelOptions((originModelOptions) =>
+      buildModelOptions([
+        ...originModelOptions.map((option) => option.value),
+        ...fallbackModels,
+      ])
+    );
+    setBasicModels(fallbackModels);
+    setFullModels(fallbackModels);
+    if (normalizeModelList(inputs.models).length === 0) {
+      handleInputChange(null, { name: 'models', value: fallbackModels });
+    }
+  };
+
+  const refreshModels = async () => {
+    if (!isEdit && inputs.key.trim() === '') {
+      showInfo(
+        inputs.type === OPENAI_CODEX_OAUTH_CHANNEL_TYPE
+          ? t('channel.edit.messages.openai_oauth_required')
+          : t('channel.edit.messages.key_required')
+      );
+      return;
+    }
+    setRefreshingModels(true);
+    try {
+      const refreshedModels = await requestChannelModels();
+      applyRefreshedModels(refreshedModels);
+      showSuccess(
+        t('channel.edit.messages.refresh_models_success', {
+          count: refreshedModels.length,
+        })
+      );
+    } catch (error) {
+      const message = getOpenAIOAuthErrorMessage(error);
+      if (
+        isOpenAICodexOAuthType(inputs.type) &&
+        isCodexModelListUnavailable(message)
+      ) {
+        showCodexModelListUnavailableNotice();
+        setRefreshingModels(false);
+        return;
+      }
+      if (!error?.isAxiosError) {
+        showError(message);
+      }
+    }
+    setRefreshingModels(false);
+  };
+
+  const getOpenAIOAuthErrorMessage = (error) => {
+    if (!error) {
+      return t('channel.edit.messages.openai_oauth_request_failed');
+    }
+    return (
+      error?.response?.data?.message ||
+      error?.message ||
+      String(error) ||
+      t('channel.edit.messages.openai_oauth_request_failed')
+    );
+  };
+
+  const isCodexModelListUnavailable = (message) =>
+    String(message || '').includes('无法自动获取 Codex OAuth 模型列表');
+
+  const showCodexModelListUnavailableNotice = () => {
+    applyCodexFallbackModels();
+    const message = t(
+      'channel.edit.messages.openai_oauth_model_list_unavailable'
+    );
+    setOpenAIOAuthNotice(message);
+    showInfo(message);
+  };
+
+  const waitForOpenAIOAuthFlow = async (flowId, method, interval = 2) => {
+    const maxAttempts = Math.ceil((15 * 60) / Math.max(interval, 1));
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(interval, 1) * 1000)
+      );
+      const res =
+        method === 'device_code'
+          ? await API.post(`/api/oauth/openai/flows/${flowId}/poll`)
+          : await API.get(`/api/oauth/openai/flows/${flowId}`);
+      if (!res || !res.data) {
+        throw new Error(t('channel.edit.messages.openai_oauth_request_failed'));
+      }
+      const { success, message, data } = res.data;
+      if (!success) {
+        throw new Error(
+          message || t('channel.edit.messages.openai_oauth_request_failed')
+        );
+      }
+      if (!data) {
+        throw new Error(t('channel.edit.messages.openai_oauth_request_failed'));
+      }
+      if (data.status === 'success') {
+        return data.credential;
+      }
+      if (data.status === 'error' || data.status === 'expired') {
+        throw new Error(data.error || data.status);
+      }
+    }
+    throw new Error(t('channel.edit.messages.openai_oauth_timeout'));
+  };
+
+  const applyOpenAIOAuthCredential = async (credential) => {
+    if (!credential) {
+      throw new Error(t('channel.edit.messages.openai_oauth_empty'));
+    }
+    handleInputChange(null, { name: 'key', value: credential });
+    setBasicModels([]);
+    setFullModels([]);
+    handleInputChange(null, { name: 'models', value: [] });
+    try {
+      const refreshedModels = await requestChannelModels(credential);
+      applyRefreshedModels(refreshedModels);
+      const message = t(
+        'channel.edit.messages.openai_oauth_success_with_models',
+        {
+          count: refreshedModels.length,
+        }
+      );
+      setOpenAIOAuthNotice(message);
+      showSuccess(message);
+    } catch (error) {
+      const errorMessage = getOpenAIOAuthErrorMessage(error);
+      if (
+        isOpenAICodexOAuthType(inputs.type) &&
+        isCodexModelListUnavailable(errorMessage)
+      ) {
+        showCodexModelListUnavailableNotice();
+        return;
+      }
+      const message = t('channel.edit.messages.openai_oauth_refresh_failed', {
+        message: errorMessage,
+      });
+      setOpenAIOAuthNotice(message);
+      if (!error?.isAxiosError) {
+        showError(message);
+      }
+    }
+  };
+
+  const startOpenAIOAuth = async (method) => {
+    setOpenAIOAuthLoading(method);
+    setOpenAIOAuthNotice('');
+    const authWindow = window.open(
+      'about:blank',
+      '_blank',
+      method === 'browser' ? 'width=520,height=760' : undefined
+    );
+    try {
+      const res = await API.post('/api/oauth/openai/login', { method });
+      if (!res || !res.data) {
+        throw new Error(t('channel.edit.messages.openai_oauth_request_failed'));
+      }
+      const { success, message, data } = res.data;
+      if (!success || !data) {
+        if (authWindow) {
+          authWindow.close();
+        }
+        showError(
+          message || t('channel.edit.messages.openai_oauth_request_failed')
+        );
+        return;
+      }
+      if (method === 'browser') {
+        if (authWindow) {
+          authWindow.location.href = data.auth_url;
+        } else {
+          window.open(data.auth_url, '_blank', 'width=520,height=760');
+        }
+        setOpenAIOAuthNotice(t('channel.edit.messages.openai_oauth_waiting'));
+        const credential = await waitForOpenAIOAuthFlow(
+          data.flow_id,
+          method,
+          2
+        );
+        await applyOpenAIOAuthCredential(credential);
+      } else {
+        if (authWindow) {
+          authWindow.location.href = data.verify_url;
+        } else {
+          window.open(data.verify_url, '_blank');
+        }
+        setOpenAIOAuthNotice(
+          t('channel.edit.messages.openai_oauth_device_code', {
+            code: data.user_code,
+          })
+        );
+        const credential = await waitForOpenAIOAuthFlow(
+          data.flow_id,
+          method,
+          data.interval || 5
+        );
+        await applyOpenAIOAuthCredential(credential);
+      }
+    } catch (error) {
+      const message = getOpenAIOAuthErrorMessage(error);
+      if (!error?.isAxiosError) {
+        showError(message);
+      }
+      setOpenAIOAuthNotice(message);
+    } finally {
+      setOpenAIOAuthLoading('');
+    }
   };
 
   return (
@@ -339,20 +672,20 @@ const EditChannel = () => {
             {inputs.type === 8 && (
               <Form.Field>
                 <Form.Input
-                    required
-                    label={t('channel.edit.proxy_url')}
-                    name='base_url'
-                    placeholder={t('channel.edit.proxy_url_placeholder')}
-                    onChange={handleInputChange}
-                    value={inputs.base_url}
-                    autoComplete='new-password'
+                  required
+                  label={t('channel.edit.proxy_url')}
+                  name='base_url'
+                  placeholder={t('channel.edit.proxy_url_placeholder')}
+                  onChange={handleInputChange}
+                  value={inputs.base_url}
+                  autoComplete='new-password'
                 />
               </Form.Field>
             )}
             {inputs.type === 50 && (
-                <Form.Field>
-                  <Form.Input
-                      required
+              <Form.Field>
+                <Form.Input
+                  required
                   label={t('channel.edit.base_url')}
                   name='base_url'
                   placeholder={t('channel.edit.base_url_placeholder')}
@@ -414,16 +747,50 @@ const EditChannel = () => {
                 {t('channel.edit.douban_notice_2')}
               </Message>
             )}
+            {inputs.type === OPENAI_CODEX_OAUTH_CHANNEL_TYPE && (
+              <Form.Field>
+                <label>{t('channel.edit.openai_oauth.title')}</label>
+                <div style={{ lineHeight: '40px', marginBottom: '12px' }}>
+                  <Button
+                    type='button'
+                    loading={openAIOAuthLoading === 'browser'}
+                    disabled={openAIOAuthLoading !== ''}
+                    onClick={() => startOpenAIOAuth('browser')}
+                  >
+                    {t('channel.edit.openai_oauth.browser')}
+                  </Button>
+                  <Button
+                    type='button'
+                    loading={openAIOAuthLoading === 'device_code'}
+                    disabled={openAIOAuthLoading !== ''}
+                    onClick={() => startOpenAIOAuth('device_code')}
+                  >
+                    {t('channel.edit.openai_oauth.device_code')}
+                  </Button>
+                </div>
+                {openAIOAuthNotice && (
+                  <Message info>{openAIOAuthNotice}</Message>
+                )}
+              </Form.Field>
+            )}
             {inputs.type !== 43 && (
               <Form.Field>
                 <Form.Dropdown
                   label={t('channel.edit.models')}
-                  placeholder={t('channel.edit.models_placeholder')}
+                  placeholder={
+                    isOpenAICodexOAuthType(inputs.type)
+                      ? t('channel.edit.openai_oauth.models_placeholder')
+                      : t('channel.edit.models_placeholder')
+                  }
                   name='models'
                   required
                   fluid
                   multiple
                   search
+                  allowAdditions
+                  additionLabel={t('channel.edit.models_addition')}
+                  noResultsMessage={t('channel.edit.models_no_results')}
+                  onAddItem={(e, { value }) => addModelOption(value)}
                   onLabelClick={(e, { value }) => {
                     copy(value).then();
                   }}
@@ -437,6 +804,14 @@ const EditChannel = () => {
             )}
             {inputs.type !== 43 && (
               <div style={{ lineHeight: '40px', marginBottom: '12px' }}>
+                <Button
+                  type={'button'}
+                  loading={refreshingModels}
+                  disabled={refreshingModels}
+                  onClick={refreshModels}
+                >
+                  {t('channel.edit.buttons.refresh_models')}
+                </Button>
                 <Button
                   type={'button'}
                   onClick={() => {
@@ -453,7 +828,9 @@ const EditChannel = () => {
                   onClick={() => {
                     handleInputChange(null, {
                       name: 'models',
-                      value: fullModels,
+                      value: isOpenAICodexOAuthType(inputs.type)
+                        ? basicModels
+                        : fullModels,
                     });
                   }}
                 >
@@ -596,6 +973,7 @@ const EditChannel = () => {
             )}
             {inputs.type !== 33 &&
               inputs.type !== 42 &&
+              inputs.type !== OPENAI_CODEX_OAUTH_CHANNEL_TYPE &&
               (batch ? (
                 <Form.Field>
                   <Form.TextArea
@@ -625,6 +1003,25 @@ const EditChannel = () => {
                   />
                 </Form.Field>
               ))}
+            {inputs.type === OPENAI_CODEX_OAUTH_CHANNEL_TYPE && (
+              <Form.Field>
+                <Form.TextArea
+                  label={t('channel.edit.openai_oauth.credential')}
+                  name='key'
+                  required
+                  placeholder={t(
+                    'channel.edit.openai_oauth.credential_placeholder'
+                  )}
+                  onChange={handleInputChange}
+                  value={inputs.key}
+                  style={{
+                    minHeight: 120,
+                    fontFamily: 'JetBrains Mono, Consolas',
+                  }}
+                  autoComplete='new-password'
+                />
+              </Form.Field>
+            )}
             {inputs.type === 37 && (
               <Form.Field>
                 <Form.Input
@@ -640,24 +1037,27 @@ const EditChannel = () => {
                 />
               </Form.Field>
             )}
-            {inputs.type !== 33 && !isEdit && (
-              <Form.Checkbox
-                checked={batch}
-                label={t('channel.edit.batch')}
-                name='batch'
-                onChange={() => setBatch(!batch)}
-              />
-            )}
+            {inputs.type !== 33 &&
+              inputs.type !== OPENAI_CODEX_OAUTH_CHANNEL_TYPE &&
+              !isEdit && (
+                <Form.Checkbox
+                  checked={batch}
+                  label={t('channel.edit.batch')}
+                  name='batch'
+                  onChange={() => setBatch(!batch)}
+                />
+              )}
             {inputs.type !== 3 &&
               inputs.type !== 33 &&
               inputs.type !== 8 &&
-                inputs.type !== 50 &&
+              inputs.type !== 50 &&
+              inputs.type !== OPENAI_CODEX_OAUTH_CHANNEL_TYPE &&
               inputs.type !== 22 && (
                 <Form.Field>
                   <Form.Input
-                      label={t('channel.edit.proxy_url')}
+                    label={t('channel.edit.proxy_url')}
                     name='base_url'
-                      placeholder={t('channel.edit.proxy_url_placeholder')}
+                    placeholder={t('channel.edit.proxy_url_placeholder')}
                     onChange={handleInputChange}
                     value={inputs.base_url}
                     autoComplete='new-password'

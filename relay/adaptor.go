@@ -14,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/adaptor/gemini"
 	"github.com/songquanpeng/one-api/relay/adaptor/ollama"
 	"github.com/songquanpeng/one-api/relay/adaptor/openai"
+	"github.com/songquanpeng/one-api/relay/adaptor/openaicodex"
 	"github.com/songquanpeng/one-api/relay/adaptor/palm"
 	"github.com/songquanpeng/one-api/relay/adaptor/proxy"
 	"github.com/songquanpeng/one-api/relay/adaptor/replicate"
@@ -40,6 +41,8 @@ func GetAdaptor(apiType int) adaptor.Adaptor {
 		return &gemini.Adaptor{}
 	case apitype.OpenAI:
 		return &openai.Adaptor{}
+	case apitype.OpenAICodexOAuth:
+		return &openaicodex.Adaptor{}
 	case apitype.PaLM:
 		return &palm.Adaptor{}
 	case apitype.Tencent:
